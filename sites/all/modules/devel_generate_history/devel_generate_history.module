@@ -1,0 +1,156 @@
+<?php
+
+/**
+ * @file
+ * The devel generate history module
+ * generate dummy history in history table
+ */
+
+/**
+ * Implements hook_menu().
+ */
+function devel_generate_history_menu() {
+  $items = array();
+  $items['admin/config/development/generate/history'] = array(
+    'title' => 'Generate history',
+    'description' => 'Generate a given number of history records by existing users & nodes',
+    'page callback' => 'drupal_get_form',
+    'page arguments' => array('devel_generate_history_form'),
+    'access arguments' => array('administer users'),
+  );
+  return $items;
+}
+
+ /**
+  * Generates history using FormAPI.
+  */
+function devel_generate_history_form() {
+  $form['num_hist'] = array(
+    '#type' => 'textfield',
+    '#title' => t('How many history per user would you like to generate? Suppose < no. of nodes'),
+    '#default_value' => 50,
+    '#size' => 10,
+  );
+  $form['num_user'] = array(
+    '#type' => 'textfield',
+    '#title' => t('How many users will be used? It cannot be greater than current no. of users'),
+    '#default_value' => 5,
+    '#size' => 10,
+  );
+  $form['del_hist'] = array(
+    '#type' => 'checkbox',
+    '#title' => t('Delete all history, if you delete all, duplicate entry may found'),
+    '#default_value' => TRUE,
+  );
+
+  $options = array(1 => t('Now'));
+  foreach (array(3600, 86400, 604800, 2592000, 31536000) as $interval) {
+    $options[$interval] = format_interval($interval, 1) . ' ' . t('ago');
+  }
+  $form['time_range'] = array(
+    '#type' => 'select',
+    '#title' => t('How old should history be ?'),
+    '#description' => t('User ages will be distributed randomly from the current time, back to the selected time.'),
+    '#options' => $options,
+    '#default_value' => 604800,
+  );
+
+  $form['submit'] = array(
+    '#type' => 'submit',
+    '#value' => t('Generate'),
+  );
+  return $form;
+}
+
+/**
+ * FormAPI submission to generate history.
+ */
+function devel_generate_history_form_submit($form_id, &$form_state) {
+  $values = $form_state['values'];
+  devel_generate_history_create($values['num_hist'], $values['num_user'], $values['del_hist'], $values['time_range']);
+}
+
+/**
+ * Generates new history.
+ *
+ * @param int $num_hist
+ *   number of history record to be generated.
+ * @param int $num_user
+ *   How many users will be used in this history generation.
+ * @param bool $del_hist
+ *   Are you going to delete previous history table?
+ * @param string $time_range 
+ *   How old is your history?
+ */
+function devel_generate_history_create($num_hist, $num_user, $del_hist, $time_range) {
+
+  if ($del_hist == TRUE) {
+    db_query("DELETE FROM {history}");
+  }
+
+  module_load_include('inc', 'devel_generate');
+  $users = devel_get_users();
+  if (count($users) < $num_user) {
+    drupal_set_message(t('No. of users more than current users', 'warning'));
+    return 1;
+  }
+  $nids = devel_generate_history_get_nid();
+  $old = REQUEST_TIME - $time_range;
+
+  for ($i = 1; $i <= $num_user; $i++) {
+    srand(devel_generate_history_make_seed());
+    shuffle($nids);
+    $time = mt_rand($old, REQUEST_TIME);
+    $index = array_rand($users);
+    $uid = $users[$index];
+    unset($users[$index]);
+
+    // Save & resume the nids array.
+    $tnids = $nids;
+    $nid = NULL;
+    for ($j = 1; $j <= $num_hist; $j++) {
+      $index = array_rand($tnids);
+      if ($index) {
+        $nid = $tnids[$index];
+      }
+      unset($tnids[$index]);
+      if ($nid != NULL) {
+        $values[] = array(
+          'nid' => $nid,
+          'uid' => $uid,
+          'timestamp' => $time,
+        );
+      }
+    }
+  }
+  // Finally to remove duplicates if any
+  $values = array_map("unserialize", array_unique(array_map("serialize", $values)));
+  // Insert history with random data.
+  $query = db_insert('history')->fields(array('nid', 'uid', 'timestamp'));
+  foreach ($values as $record) {
+    $query->values($record);
+  }
+  $query->execute();
+  drupal_set_message(t('DONE'));
+  return TRUE;
+}
+
+/**
+ * Generates seed.
+ */
+function devel_generate_history_make_seed() {
+  list($usec, $sec) = explode(' ', microtime());
+  return (float) $sec + ((float) $usec * 100000);
+}
+
+/**
+ * Get nid list.
+ */
+function devel_generate_history_get_nid() {
+  $nids = array();
+  $result = db_query("SELECT nid FROM {node}");
+  foreach ($result as $record) {
+    $nids[] = $record->nid;
+  }
+  return $nids;
+}
